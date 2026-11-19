@@ -171,3 +171,27 @@ BEGIN SELECT RAISE(ABORT, 'Auditoria é permanente'); END;
 CREATE TRIGGER IF NOT EXISTS tg_no_delete_lotes_usados BEFORE DELETE ON lotes
 WHEN EXISTS (SELECT 1 FROM encomendas WHERE lote_id = OLD.id)
 BEGIN SELECT RAISE(ABORT, 'Lote possui encomendas; desative-o'); END;
+
+-- Histórico de importações da relação oficial de quadras e lotes (permanente).
+CREATE TABLE IF NOT EXISTS importacoes (
+  id               INTEGER PRIMARY KEY,
+  realizada_em     TEXT NOT NULL,
+  usuario_id       INTEGER NOT NULL REFERENCES usuarios(id),
+  usuario_nome     TEXT NOT NULL,
+  arquivo_nome     TEXT,
+  arquivo_sha256   TEXT NOT NULL,
+  arquivo_salvo    TEXT,
+  total_linhas     INTEGER NOT NULL,
+  importados       INTEGER NOT NULL,
+  reativados       INTEGER NOT NULL,
+  ignorados        INTEGER NOT NULL,
+  duplicados       INTEGER NOT NULL,
+  invalidos        INTEGER NOT NULL,
+  quadras_novas    INTEGER NOT NULL,
+  desativados      INTEGER NOT NULL DEFAULT 0,
+  detalhes         TEXT
+);
+CREATE TRIGGER IF NOT EXISTS tg_no_delete_importacoes BEFORE DELETE ON importacoes
+BEGIN SELECT RAISE(ABORT, 'Histórico de importações é permanente'); END;
+CREATE TRIGGER IF NOT EXISTS tg_no_update_importacoes BEFORE UPDATE ON importacoes
+BEGIN SELECT RAISE(ABORT, 'Histórico de importações é permanente'); END;

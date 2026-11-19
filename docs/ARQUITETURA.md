@@ -136,6 +136,32 @@ tolerância de horário, backup automático e retenção.
 
 **contadores** — `nome`, `valor` (sequência anual do identificador).
 
+**importacoes** (permanente; triggers impedem alteração e exclusão) — `id`, `realizada_em`, `usuario_id`,
+`usuario_nome`, `arquivo_nome`, `arquivo_sha256`, `arquivo_salvo`, `total_linhas`, `importados`,
+`reativados`, `ignorados`, `duplicados`, `invalidos`, `quadras_novas`, `desativados`, `detalhes`
+(JSON com o resumo e as linhas com problema).
+
+### Importação da relação oficial de quadras e lotes
+
+Módulo `server/importacao.js`, isolado do cadastro manual. Fluxo: **arquivo → prévia → confirmação**.
+
+1. **Leitura**: CSV (vírgula, ponto e vírgula ou tabulação; BOM tolerado) ou XLSX. Só as colunas
+   *Quadra* e *Lote* são usadas e as demais aparecem na prévia como ignoradas. O valor é gravado como
+   **texto exatamente igual ao arquivo** (zeros à esquerda preservados). No Excel, usa-se o texto exibido
+   da célula, e células numéricas sem formato geram aviso.
+2. **Classificação** de cada linha: `NOVO`, `REATIVAR` (existia inativo), `EXISTENTE` (ignorado),
+   `DUPLICADO_ARQUIVO`, `DUPLICADO_EQUIVALENTE` (ex.: `1` no arquivo e `01` no banco) ou `INVALIDO`.
+   A equivalência remove zeros à esquerda só para *comparar*, nunca para gravar. O cadastro manual usa a
+   mesma regra.
+3. **Prévia** (`POST /api/quadras-lotes/importar/previa`): retorna os totais, a lista registro a registro,
+   a conferência da sequência de quadras (primeira, última, faltantes, quadras novas) e o hash SHA-256
+   do arquivo. Nada é gravado.
+4. **Confirmação** (`POST /api/quadras-lotes/importar`): exige `hash_previa` igual ao hash do arquivo
+   enviado. Grava tudo numa única transação, registra a importação em `importacoes` e na auditoria e
+   guarda a cópia do arquivo em `data/importacoes/`. Opcionalmente **desativa** (nunca apaga) os lotes
+   ausentes do arquivo.
+5. **Histórico**: `GET /api/quadras-lotes/importacoes`.
+
 ## 6. API (resumo)
 
 | Método | Rota | Descrição |
@@ -151,7 +177,8 @@ tolerância de horário, backup automático e retenção.
 | PUT | `/api/retiradas/:id` | Correção justificada (admin) |
 | POST | `/api/retiradas/:id/estornar` | Estorno justificado (admin) |
 | POST/GET | `/api/encomendas/:id/anexos`, `/api/anexos/:id/arquivo` | Comprovantes |
-| CRUD | `/api/quadras`, `/api/lotes`, `/api/quadras-lotes/importar` | Relação oficial |
+| CRUD | `/api/quadras`, `/api/lotes` | Relação oficial (cadastro manual) |
+| POST/GET | `/api/quadras-lotes/importar/previa`, `/api/quadras-lotes/importar`, `/api/quadras-lotes/importacoes` | Importação com prévia e histórico (admin) |
 | CRUD | `/api/transportadoras`, `/api/usuarios`, `/api/configuracoes` | Cadastros |
 | GET | `/api/relatorios?formato=json\|pdf\|xlsx`, `/api/relatorios/funcionarios` | Relatórios |
 | GET | `/api/auditoria` | Trilhas de auditoria (admin) |

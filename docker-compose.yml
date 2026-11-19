@@ -1,0 +1,12 @@
+services:
+  encomendas:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: America/Sao_Paulo
+      # COOKIE_SECURE: "1"   # ative quando estiver atrás de HTTPS
+      # TRUST_PROXY: "1"
+    volumes:
+      - ./data:/app/data

@@ -91,43 +91,89 @@ test('quadras e lotes: cadastro manual e permissões', async () => {
   assert.deepEqual(r.data.map((l) => l.codigo), ['1', '2']);
 });
 
-test('quadras e lotes: importação de planilha CSV e XLSX (simulação + gravação)', async () => {
-  const csv = 'Quadra;Lote;Endereço;Observação\nB;1;;\nB;2;;\nB;10;;\nB;2;;\n;5;;\nA;1;Endereço atualizado;\n';
-  let fd = new FormData();
-  fd.append('arquivo', new Blob([csv], { type: 'text/csv' }), 'relacao.csv');
-  let r = await admin.post('/api/quadras-lotes/importar?simular=1', fd);
+test('importação oficial: prévia, zeros à esquerda, duplicidades, hash e histórico', async () => {
+  const arq = (conteudo, nome = 'relacao.csv') => { const f = new FormData(); f.append('arquivo', new Blob([conteudo]), nome); return f; };
+  // CSV com BOM, separador vírgula, coluna extra (ignorada), duplicado exato, duplicado equivalente, inválido
+  const csv = '﻿Quadra,Lote,Endereço\nB,01,Rua Inventada 1\nB,02,\nB,10,\nB,02,\nB,1,\n,05,\n07,00,\n';
+  assert.equal((await ctrl.post('/api/quadras-lotes/importar/previa', arq(csv))).status, 403, 'somente administrador');
+  let r = await admin.post('/api/quadras-lotes/importar/previa', arq(csv));
   assert.equal(r.status, 200);
-  assert.equal(r.data.simulacao, true);
-  assert.equal(r.data.quadras_novas, 1);
-  assert.equal(r.data.lotes_novos, 3);
-  assert.equal(r.data.lotes_atualizados, 1);
-  assert.equal(r.data.erros.length, 2);
-  assert.equal((await admin.get('/api/quadras')).data.length, 1, 'simulação não grava');
-  fd = new FormData();
-  fd.append('arquivo', new Blob([csv], { type: 'text/csv' }), 'relacao.csv');
-  r = await admin.post('/api/quadras-lotes/importar', fd);
-  assert.equal(r.data.lotes_novos, 3);
-  r = await admin.get('/api/lotes?q=');
-  const b = r.data.filter((l) => l.quadra_codigo === 'B').map((l) => l.codigo);
-  assert.deepEqual(b, ['1', '2', '10'], 'ordenação natural');
-  assert.equal(r.data.find((l) => l.id === ids.lA1).endereco, 'Endereço atualizado');
+  assert.deepEqual(r.data.colunas_ignoradas, ['Endereço']);
+  const res = r.data.resumo;
+  assert.equal(res.total_linhas, 7);
+  assert.equal(res.novos, 4, 'B/01, B/02, B/10, 07/00');
+  assert.equal(res.duplicados_arquivo, 2, 'B/02 repetido e B/1 ≡ B/01');
+  assert.equal(res.invalidos, 1);
+  assert.equal(res.quadras_novas, 2);
+  assert.equal(r.data.registros.find((x) => x.linha === 6).situacao, 'DUPLICADO_ARQUIVO');
+  const hash = r.data.hash;
+  assert.equal((await admin.get('/api/lotes')).data.filter((l) => l.quadra_codigo === 'B').length, 0, 'prévia não grava');
 
+  // confirmação exige a prévia do mesmo arquivo
+  assert.equal((await admin.post('/api/quadras-lotes/importar', arq(csv))).status, 400);
+  const outro = arq(csv + 'B,99\n'); outro.append('hash_previa', hash);
+  assert.equal((await admin.post('/api/quadras-lotes/importar', outro)).status, 409, 'arquivo diferente da prévia');
+  const ok = arq(csv); ok.append('hash_previa', hash);
+  r = await admin.post('/api/quadras-lotes/importar', ok);
+  assert.equal(r.status, 201);
+  assert.equal(r.data.importados, 4);
+  assert.equal(r.data.ignorados, 1);
+  assert.equal(r.data.duplicados, 2);
+  assert.equal(r.data.usuario, 'Administrador Teste');
+
+  const lotes = (await admin.get('/api/lotes')).data;
+  assert.deepEqual(lotes.filter((l) => l.quadra_codigo === 'B').map((l) => l.codigo), ['01', '02', '10'], 'zeros à esquerda preservados');
+  assert.ok(lotes.some((l) => l.quadra_codigo === '07' && l.codigo === '00'));
+  assert.ok(lotes.every((l) => l.endereco === null || l.quadra_codigo === 'A'), 'nenhum endereço importado');
+
+  // reimportar: tudo ignorado; arquivo com "1" (sem zero) é identificado como duplicado de "01"
+  r = await admin.post('/api/quadras-lotes/importar/previa', arq('Quadra;Lote\nB;01\nB;1\n7;0\nB;11\n'));
+  assert.equal(r.data.resumo.ja_existentes, 1);
+  assert.equal(r.data.resumo.duplicados_equivalentes, 1, '7/0 ≡ 07/00');
+  assert.equal(r.data.resumo.duplicados_arquivo, 1, 'B;1 depois de B;01');
+  assert.equal(r.data.resumo.novos, 1);
+  assert.match(r.data.registros.find((x) => x.quadra === '7').detalhe, /07/);
+
+  // cadastro manual também bloqueia grafia equivalente
+  const qB = (await admin.get('/api/quadras')).data.find((q) => q.codigo === 'B').id;
+  assert.equal((await admin.post('/api/lotes', { quadra_id: qB, codigo: '1' })).status, 409);
+  assert.equal((await admin.post('/api/quadras', { codigo: '7' })).status, 409);
+
+  // Excel: célula de texto "03" e célula numérica com formato "00" preservam zeros
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('x');
-  ws.addRow(['Quadra', 'Lote', 'Endereço']);
-  ws.addRow(['C', 7, null]);
-  ws.addRow(['C', 8, null]);
-  const buf = await wb.xlsx.writeBuffer();
-  fd = new FormData();
-  fd.append('arquivo', new Blob([buf]), 'relacao.xlsx');
-  r = await admin.post('/api/quadras-lotes/importar', fd);
-  assert.equal(r.data.lotes_novos, 2);
-  r = await admin.get('/api/lotes');
-  ids.lB1 = r.data.find((l) => l.quadra_codigo === 'B' && l.codigo === '1').id;
-  ids.lC7 = r.data.find((l) => l.quadra_codigo === 'C' && l.codigo === '7').id;
-  ids.qB = r.data.find((l) => l.quadra_codigo === 'B').quadra_id;
-  r = await admin.get('/api/quadras-lotes/modelo.xlsx', { raw: true });
-  assert.equal(r.status, 200);
+  ws.addRow(['Quadra', 'Lote']);
+  ws.addRow(['C', '07']);
+  ws.addRow(['C', 8]); ws.getCell('B3').numFmt = '00';
+  ws.addRow(['C', 9]);
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
+  r = await admin.post('/api/quadras-lotes/importar/previa', arq(buf, 'relacao.xlsx'));
+  assert.deepEqual(r.data.registros.map((x) => x.lote), ['07', '08', '9']);
+  assert.ok(r.data.registros[2].aviso, 'avisa sobre célula numérica sem formato');
+  const fx = arq(buf, 'relacao.xlsx'); fx.append('hash_previa', r.data.hash);
+  assert.equal((await admin.post('/api/quadras-lotes/importar', fx)).status, 201);
+
+  // desativação opcional de lotes ausentes (nunca apaga)
+  const so = 'Quadra,Lote\nC,07\nC,08\nC,9\n';
+  r = await admin.post('/api/quadras-lotes/importar/previa', arq(so));
+  assert.ok(r.data.resumo.lotes_ausentes_no_arquivo > 0);
+
+  // histórico permanente com data, horário e usuário
+  const hist = (await admin.get('/api/quadras-lotes/importacoes')).data;
+  assert.equal(hist.length, 2);
+  assert.equal(hist[1].usuario_nome, 'Administrador Teste');
+  assert.equal(hist[1].importados, 4);
+  assert.ok(hist[1].realizada_em);
+  const det = (await admin.get(`/api/quadras-lotes/importacoes/${hist[1].id}`)).data;
+  assert.equal(det.detalhes.problemas.length, 3);
+  assert.throws(() => srv.db.prepare('DELETE FROM importacoes').run(), /permanente/);
+  assert.equal((await ctrl.get('/api/quadras-lotes/importacoes')).status, 403);
+
+  const todos = (await admin.get('/api/lotes')).data;
+  ids.lB1 = todos.find((l) => l.quadra_codigo === 'B' && l.codigo === '01').id;
+  ids.lC7 = todos.find((l) => l.quadra_codigo === 'C' && l.codigo === '07').id;
+  ids.qB = qB;
+  assert.equal((await admin.get('/api/quadras-lotes/modelo.xlsx', { raw: true })).status, 200);
 });
 
 test('transportadoras: iniciais e inclusão por controlador', async () => {
@@ -192,7 +238,7 @@ test('pesquisa por todos os filtros', async () => {
   assert.equal((await q(`recebido_por_id=${ids.dora}`)).total, 5);
   assert.equal((await q('status=PENDENTE')).total, 7);
   assert.equal((await q('q=Envelope')).total, 1);
-  assert.equal((await q('quadra=B&lote=1')).total, 1);
+  assert.equal((await q('quadra=B&lote=01')).total, 1);
   const d = addDays(todayLocal(), -10);
   assert.equal((await q(`data_ini=${d}&data_fim=${d}`)).total, 1);
   assert.equal((await q(`data_ini=${todayLocal()}`)).total, 6);

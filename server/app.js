@@ -20,6 +20,7 @@ function createApp({ dataDir, secureCookies = false, trustProxy = false, log = c
         defaultSrc: ["'self'"],
         imgSrc: ["'self'", 'data:', 'blob:'],
         styleSrc: ["'self'"],
+        styleSrcAttr: ["'unsafe-inline'"],
         scriptSrc: ["'self'"],
         connectSrc: ["'self'"],
         objectSrc: ["'none'"],
@@ -39,6 +40,7 @@ function createApp({ dataDir, secureCookies = false, trustProxy = false, log = c
   api.get('/saude', (req, res) => res.json({ ok: true, hora: new Date().toISOString() }));
   api.use(require('./routes/auth')(ctx));
   api.use(require('./routes/usuarios')(ctx));
+  api.use(require('./routes/importacao')(ctx));
   api.use(require('./routes/quadras')(ctx));
   api.use(require('./routes/geral')(ctx));
   api.use(require('./routes/anexos')(ctx));
