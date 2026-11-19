@@ -1,0 +1,35 @@
+# Cloudflare Workers – Gestão de Encomendas Fazenda da Ilha
+# Passo a passo de publicação: README.md → "Publicação na Cloudflare (gratuita)".
+name = "encomendas-fazenda-da-ilha"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# Banco de dados D1. Após `npx wrangler d1 create encomendas-fazenda-da-ilha`,
+# substitua database_id pelo identificador exibido.
+[[d1_databases]]
+binding = "DB"
+database_name = "encomendas-fazenda-da-ilha"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[observability]
+enabled = true
+
+# OPCIONAL – armazenamento de comprovantes no R2 (em vez do próprio D1).
+# Crie o bucket (`npx wrangler r2 bucket create encomendas-comprovantes`) e descomente:
+# [[r2_buckets]]
+# binding = "ARQUIVOS"
+# bucket_name = "encomendas-comprovantes"
+
+[vars]
+# Iterações do hash de senha (PBKDF2-SHA256). 100000 é o máximo do Workers e o mais seguro.
+# Se o login apresentar "Error 1102 / Worker exceeded resource limits" no plano gratuito, reduza para 50000
+# e publique de novo (senhas já cadastradas continuam funcionando).
+PBKDF2_ITERACOES = "100000"

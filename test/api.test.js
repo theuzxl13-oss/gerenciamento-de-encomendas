@@ -1,10 +1,27 @@
-'use strict';
-// Testes de integração da API: operações reais contra o servidor e o banco SQLite.
-const { test, before, after } = require('node:test');
-const assert = require('node:assert/strict');
-const ExcelJS = require('exceljs');
-const { iniciar, cliente } = require('./helpers');
-const { todayLocal, addDays, localParts } = require('../server/time');
+// Testes de integração da API: operações reais contra o servidor e o banco.
+// ALVO=node (padrão): Node.js + SQLite · ALVO=cloudflare: Workers local (workerd) + D1.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import ExcelJS from 'exceljs';
+import { iniciar, cliente, ALVO } from './helpers.js';
+import { todayLocal, addDays, localParts } from '../src/lib/time.js';
+import { parseCsv, matrizDeExcel, extrairLinhas, sha256Hex } from '../public/js/planilha.js';
+
+// Lê o arquivo como o navegador faz (mesmo módulo public/js/planilha.js) e monta os dados da importação.
+async function lerImportacao(conteudo, nome = 'relacao.csv') {
+  const bytes = typeof conteudo === 'string' ? new TextEncoder().encode(conteudo) : new Uint8Array(conteudo);
+  let matriz;
+  if (nome.endsWith('.xlsx')) { const wb = new ExcelJS.Workbook(); await wb.xlsx.load(Buffer.from(bytes)); matriz = matrizDeExcel(wb); } else matriz = parseCsv(new TextDecoder().decode(bytes));
+  const { linhas, colunas_ignoradas } = extrairLinhas(matriz);
+  return { dados: { arquivo_nome: nome, arquivo_sha256: await sha256Hex(bytes), colunas_ignoradas, linhas }, bytes };
+}
+const previa = (c, imp) => c.post('/api/quadras-lotes/importar/previa', imp.dados);
+function confirmar(c, imp, token, extra = {}) {
+  const f = new FormData();
+  f.append('dados', JSON.stringify({ ...imp.dados, token, ...extra }));
+  f.append('arquivo', new Blob([imp.bytes]), imp.dados.arquivo_nome);
+  return c.post('/api/quadras-lotes/importar', f);
+}
 
 let srv;
 let admin; let ctrl; let ctrl2;
@@ -91,14 +108,14 @@ test('quadras e lotes: cadastro manual e permissões', async () => {
   assert.deepEqual(r.data.map((l) => l.codigo), ['1', '2']);
 });
 
-test('importação oficial: prévia, zeros à esquerda, duplicidades, hash e histórico', async () => {
-  const arq = (conteudo, nome = 'relacao.csv') => { const f = new FormData(); f.append('arquivo', new Blob([conteudo]), nome); return f; };
+test('importação oficial: prévia, zeros à esquerda, duplicidades, token e histórico', async () => {
   // CSV com BOM, separador vírgula, coluna extra (ignorada), duplicado exato, duplicado equivalente, inválido
   const csv = '﻿Quadra,Lote,Endereço\nB,01,Rua Inventada 1\nB,02,\nB,10,\nB,02,\nB,1,\n,05,\n07,00,\n';
-  assert.equal((await ctrl.post('/api/quadras-lotes/importar/previa', arq(csv))).status, 403, 'somente administrador');
-  let r = await admin.post('/api/quadras-lotes/importar/previa', arq(csv));
+  const imp = await lerImportacao(csv);
+  assert.deepEqual(imp.dados.colunas_ignoradas, ['Endereço']);
+  assert.equal((await previa(ctrl, imp)).status, 403, 'somente administrador');
+  let r = await previa(admin, imp);
   assert.equal(r.status, 200);
-  assert.deepEqual(r.data.colunas_ignoradas, ['Endereço']);
   const res = r.data.resumo;
   assert.equal(res.total_linhas, 7);
   assert.equal(res.novos, 4, 'B/01, B/02, B/10, 07/00');
@@ -106,15 +123,15 @@ test('importação oficial: prévia, zeros à esquerda, duplicidades, hash e his
   assert.equal(res.invalidos, 1);
   assert.equal(res.quadras_novas, 2);
   assert.equal(r.data.registros.find((x) => x.linha === 6).situacao, 'DUPLICADO_ARQUIVO');
-  const hash = r.data.hash;
+  assert.ok(r.data.registros.every((x) => !('_lote_id' in x)), 'campos internos não vazam');
+  const token = r.data.token;
   assert.equal((await admin.get('/api/lotes')).data.filter((l) => l.quadra_codigo === 'B').length, 0, 'prévia não grava');
 
-  // confirmação exige a prévia do mesmo arquivo
-  assert.equal((await admin.post('/api/quadras-lotes/importar', arq(csv))).status, 400);
-  const outro = arq(csv + 'B,99\n'); outro.append('hash_previa', hash);
-  assert.equal((await admin.post('/api/quadras-lotes/importar', outro)).status, 409, 'arquivo diferente da prévia');
-  const ok = arq(csv); ok.append('hash_previa', hash);
-  r = await admin.post('/api/quadras-lotes/importar', ok);
+  // confirmação exige o token da prévia dos mesmos dados
+  assert.equal((await confirmar(admin, imp, undefined)).status, 400);
+  const alterado = { dados: { ...imp.dados, linhas: [...imp.dados.linhas, { linha: 99, quadra: 'B', lote: '99' }] }, bytes: imp.bytes };
+  assert.equal((await confirmar(admin, alterado, token)).status, 409, 'dados diferentes da prévia');
+  r = await confirmar(admin, imp, token);
   assert.equal(r.status, 201);
   assert.equal(r.data.importados, 4);
   assert.equal(r.data.ignorados, 1);
@@ -125,9 +142,10 @@ test('importação oficial: prévia, zeros à esquerda, duplicidades, hash e his
   assert.deepEqual(lotes.filter((l) => l.quadra_codigo === 'B').map((l) => l.codigo), ['01', '02', '10'], 'zeros à esquerda preservados');
   assert.ok(lotes.some((l) => l.quadra_codigo === '07' && l.codigo === '00'));
   assert.ok(lotes.every((l) => l.endereco === null || l.quadra_codigo === 'A'), 'nenhum endereço importado');
+  assert.ok(lotes.filter((l) => l.quadra_codigo === 'B').every((l) => l.criado_por_id && l.atualizado_por_id), 'responsável registrado');
 
   // reimportar: tudo ignorado; arquivo com "1" (sem zero) é identificado como duplicado de "01"
-  r = await admin.post('/api/quadras-lotes/importar/previa', arq('Quadra;Lote\nB;01\nB;1\n7;0\nB;11\n'));
+  r = await previa(admin, await lerImportacao('Quadra;Lote\nB;01\nB;1\n7;0\nB;11\n'));
   assert.equal(r.data.resumo.ja_existentes, 1);
   assert.equal(r.data.resumo.duplicados_equivalentes, 1, '7/0 ≡ 07/00');
   assert.equal(r.data.resumo.duplicados_arquivo, 1, 'B;1 depois de B;01');
@@ -139,23 +157,21 @@ test('importação oficial: prévia, zeros à esquerda, duplicidades, hash e his
   assert.equal((await admin.post('/api/lotes', { quadra_id: qB, codigo: '1' })).status, 409);
   assert.equal((await admin.post('/api/quadras', { codigo: '7' })).status, 409);
 
-  // Excel: célula de texto "03" e célula numérica com formato "00" preservam zeros
+  // Excel: célula de texto "07" e célula numérica com formato "00" preservam zeros
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('x');
   ws.addRow(['Quadra', 'Lote']);
   ws.addRow(['C', '07']);
   ws.addRow(['C', 8]); ws.getCell('B3').numFmt = '00';
   ws.addRow(['C', 9]);
-  const buf = Buffer.from(await wb.xlsx.writeBuffer());
-  r = await admin.post('/api/quadras-lotes/importar/previa', arq(buf, 'relacao.xlsx'));
+  const impX = await lerImportacao(await wb.xlsx.writeBuffer(), 'relacao.xlsx');
+  r = await previa(admin, impX);
   assert.deepEqual(r.data.registros.map((x) => x.lote), ['07', '08', '9']);
   assert.ok(r.data.registros[2].aviso, 'avisa sobre célula numérica sem formato');
-  const fx = arq(buf, 'relacao.xlsx'); fx.append('hash_previa', r.data.hash);
-  assert.equal((await admin.post('/api/quadras-lotes/importar', fx)).status, 201);
+  assert.equal((await confirmar(admin, impX, r.data.token)).status, 201);
 
   // desativação opcional de lotes ausentes (nunca apaga)
-  const so = 'Quadra,Lote\nC,07\nC,08\nC,9\n';
-  r = await admin.post('/api/quadras-lotes/importar/previa', arq(so));
+  r = await previa(admin, await lerImportacao('Quadra,Lote\nC,07\nC,08\nC,9\n'));
   assert.ok(r.data.resumo.lotes_ausentes_no_arquivo > 0);
 
   // histórico permanente com data, horário e usuário
@@ -166,14 +182,14 @@ test('importação oficial: prévia, zeros à esquerda, duplicidades, hash e his
   assert.ok(hist[1].realizada_em);
   const det = (await admin.get(`/api/quadras-lotes/importacoes/${hist[1].id}`)).data;
   assert.equal(det.detalhes.problemas.length, 3);
-  assert.throws(() => srv.db.prepare('DELETE FROM importacoes').run(), /permanente/);
+  assert.ok(det.arquivo_salvo, 'arquivo original guardado');
+  await assert.rejects(srv.sql('DELETE FROM importacoes'), /permanente/);
   assert.equal((await ctrl.get('/api/quadras-lotes/importacoes')).status, 403);
 
   const todos = (await admin.get('/api/lotes')).data;
   ids.lB1 = todos.find((l) => l.quadra_codigo === 'B' && l.codigo === '01').id;
   ids.lC7 = todos.find((l) => l.quadra_codigo === 'C' && l.codigo === '07').id;
   ids.qB = qB;
-  assert.equal((await admin.get('/api/quadras-lotes/modelo.xlsx', { raw: true })).status, 200);
 });
 
 test('transportadoras: iniciais e inclusão por controlador', async () => {
@@ -270,7 +286,7 @@ test('baixa (retirada própria) e bloqueio de baixa duplicada', async () => {
     ctrl2.post('/api/retiradas', { encomenda_ids: [ids.c0], tipo: 'PROPRIA', retirado_por_nome: 'Pessoa B' }),
   ]);
   assert.deepEqual([a.status, b.status].sort(), [201, 409]);
-  const cnt = srv.db.prepare('SELECT COUNT(*) n FROM retiradas WHERE encomenda_id = ?').get(ids.c0).n;
+  const cnt = (await ctrl.get(`/api/encomendas/${ids.c0}`)).data.retiradas.length;
   assert.equal(cnt, 1);
   e = (await ctrl.get('/api/encomendas?status=PENDENTE')).data;
   assert.ok(!e.itens.some((x) => x.id === ids.e1 || x.id === ids.c0), 'retirada não permanece pendente');
@@ -394,13 +410,17 @@ test('cancelamento lógico: registro nunca desaparece', async () => {
   assert.equal(r.status, 409);
 });
 
-test('banco de dados impede exclusões e alteração da auditoria', () => {
-  assert.throws(() => srv.db.prepare('DELETE FROM encomendas WHERE id = ?').run(ids.e1), /não podem ser apagadas/);
-  assert.throws(() => srv.db.prepare('DELETE FROM retiradas').run(), /não podem ser apagadas/);
-  assert.throws(() => srv.db.prepare('DELETE FROM auditoria').run(), /permanente/);
-  assert.throws(() => srv.db.prepare("UPDATE auditoria SET acao = 'X'").run(), /permanente/);
-  assert.throws(() => srv.db.prepare('DELETE FROM usuarios').run(), /desative/);
-  assert.throws(() => srv.db.prepare('DELETE FROM lotes WHERE id = ?').run(ids.lA1), /desative/);
+test('banco de dados impede exclusões e alteração da auditoria', async () => {
+  await assert.rejects(srv.sql(`DELETE FROM encomendas WHERE id = ${ids.e1}`), /não podem ser apagadas/);
+  await assert.rejects(srv.sql('DELETE FROM retiradas'), /não podem ser apagadas/);
+  await assert.rejects(srv.sql('DELETE FROM auditoria'), /permanente/);
+  await assert.rejects(srv.sql("UPDATE auditoria SET acao = 'X'"), /permanente/);
+  await assert.rejects(srv.sql('DELETE FROM usuarios'), /desative/);
+  await assert.rejects(srv.sql(`DELETE FROM lotes WHERE id = ${ids.lA1}`), /LOTE_COM_ENCOMENDAS/);
+  await assert.rejects(srv.sql(`UPDATE lotes SET codigo = 'X1' WHERE id = ${ids.lA1}`), /LOTE_COM_ENCOMENDAS/);
+  // mesmo direto no banco, uma segunda retirada para encomenda já retirada é recusada
+  await assert.rejects(srv.sql(`INSERT INTO retiradas (encomenda_id, tipo, data_local, retirado_por_nome, lancado_por_id, lancado_em)
+                                VALUES (${ids.e2}, 'PROPRIA', '2026-01-01', 'X', 1, '2026-01-01')`), /ENCOMENDA_NAO_PENDENTE/);
 });
 
 test('comprovantes: upload, acesso restrito e remoção lógica', async () => {
@@ -434,49 +454,158 @@ test('dashboard: indicadores consistentes', async () => {
   const pend = (await ctrl.get('/api/encomendas?status=PENDENTE')).data.total;
   assert.equal(d.indicadores.pendentes, pend);
   assert.equal(d.indicadores.outro_plantao_hoje, 3);
-  assert.equal(d.indicadores.total_recebido, srv.db.prepare("SELECT COUNT(*) n FROM encomendas WHERE status <> 'CANCELADA'").get().n);
+  assert.equal(d.indicadores.total_recebido, (await ctrl.get('/api/encomendas')).data.total);
   assert.equal(d.indicadores.recebidas_hoje, d.indicadores.total_recebido - 1);
   assert.equal(d.indicadores.pendentes_alerta, 1);
   assert.ok(d.recentes.length > 0);
   assert.equal(d.antigas[0].id, ids.e3, 'mais antiga primeiro');
 });
 
-test('relatórios: JSON, PDF, Excel e por funcionário', async () => {
+test('relatórios: filtros, totais, paginação para exportação e por funcionário', async () => {
   let r = await ctrl.get('/api/relatorios?tipo_retirada=OUTRO_PLANTAO');
   assert.equal(r.data.total, 3);
   assert.ok(r.data.itens.every((i) => i.status === 'RETIRADA_OUTRO_PLANTAO'));
+  assert.deepEqual(r.data.resumo.por_status.map((s) => [s.status, s.n]), [['RETIRADA_OUTRO_PLANTAO', 3]]);
   r = await ctrl.get(`/api/relatorios?controlador_id=${ids.dora}`);
   assert.ok(r.data.total >= 4);
+  assert.match(r.data.filtros, /Dora Controladora/);
   r = await ctrl.get(`/api/relatorios?quadra_id=${ids.qA}&status=PENDENTE`);
   assert.ok(r.data.itens.every((i) => i.quadra === 'A' && i.status === 'PENDENTE'));
-  const pdf = await ctrl.get(`/api/relatorios?formato=pdf&data_ini=${addDays(todayLocal(), -30)}`, { raw: true });
-  assert.equal(pdf.status, 200);
-  const pbuf = Buffer.from(await pdf.arrayBuffer());
-  assert.equal(pbuf.subarray(0, 5).toString(), '%PDF-');
-  const xls = await ctrl.get('/api/relatorios?formato=xlsx', { raw: true });
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(Buffer.from(await xls.arrayBuffer()));
-  const ws = wb.getWorksheet('Encomendas');
+  // a exportação no navegador busca todas as páginas: soma das páginas = total
   const total = (await ctrl.get('/api/relatorios')).data.total;
-  assert.equal(ws.rowCount - 4, total, 'todas as linhas exportadas');
-  assert.equal(ws.getRow(4).getCell(1).value, 'Identificador');
+  const p1 = (await ctrl.get('/api/encomendas?por_pagina=5&pagina=1')).data;
+  const p2 = (await ctrl.get('/api/encomendas?por_pagina=5&pagina=2')).data;
+  const p3 = (await ctrl.get('/api/encomendas?por_pagina=5&pagina=3')).data;
+  assert.equal(p1.itens.length + p2.itens.length + p3.itens.length, total);
+  assert.equal(new Set([...p1.itens, ...p2.itens, ...p3.itens].map((e) => e.id)).size, total, 'sem repetição entre páginas');
+  assert.equal((await ctrl.post('/api/relatorios/exportacao', { formato: 'pdf', filtros: 'teste', total })).status, 200);
   r = await ctrl.get('/api/relatorios/funcionarios');
   const carlos = r.data.linhas.find((l) => l.nome === 'Carlos Controlador');
   const dora = r.data.linhas.find((l) => l.nome === 'Dora Controladora');
   assert.equal(carlos.lancamentos_outro_plantao, 3);
   assert.equal(dora.entregas_informadas_outro_plantao, 1);
   assert.equal(dora.lancamentos_outro_plantao, 0);
-  const fpdf = await ctrl.get('/api/relatorios/funcionarios?formato=pdf', { raw: true });
-  assert.equal(Buffer.from(await fpdf.arrayBuffer()).subarray(0, 5).toString(), '%PDF-');
+});
+
+test('gerenciar quadras e lotes: cadastro, edição, pesquisa, duplicidades e quadras acima de 114', async () => {
+  // somente administrador altera cadastros
+  assert.equal((await ctrl.post('/api/quadras', { codigo: '115' })).status, 403);
+  assert.equal((await ctrl.post('/api/lotes', { quadra_id: ids.qB, codigo: '50' })).status, 403);
+  assert.equal((await ctrl.put(`/api/lotes/${ids.lB1}`, { ativo: false })).status, 403);
+  assert.equal((await ctrl.del(`/api/lotes/${ids.lB1}`, { justificativa: 'x' })).status, 403);
+  assert.equal((await ctrl.get(`/api/lotes/${ids.lB1}`)).status, 200, 'controlador consulta');
+
+  // quadras acima de 114, quadra e lote como campos separados
+  let r = await admin.post('/api/quadras', { codigo: '115' });
+  assert.equal(r.status, 201); const q115 = r.data.id;
+  assert.equal(r.data.criado_por_id, (await admin.get('/api/auth/me')).data.id, 'responsável registrado');
+  r = await admin.post('/api/quadras', { codigo: '120', descricao: 'Expansão' });
+  assert.equal(r.status, 201); const q120 = r.data.id;
+  assert.equal((await admin.post('/api/quadras', { codigo: '115' })).status, 409, 'quadra duplicada');
+  assert.equal((await admin.post('/api/quadras', { codigo: '0115' })).status, 409, 'quadra duplicada com zero à esquerda');
+  assert.equal((await admin.post('/api/quadras', { codigo: '' })).status, 400);
+  assert.equal((await admin.post('/api/quadras', { codigo: 'Q<1>' })).status, 400, 'caracteres inválidos');
+  r = await admin.post('/api/lotes', { quadra_id: q115, codigo: '01' });
+  assert.equal(r.status, 201); const l115 = r.data.id;
+  assert.equal(r.data.codigo, '01');
+  assert.equal((await admin.post('/api/lotes', { quadra_id: q115, codigo: '01' })).status, 409, 'lote duplicado na mesma quadra');
+  assert.equal((await admin.post('/api/lotes', { quadra_id: q115, codigo: '1' })).status, 409, 'duplicado por grafia equivalente');
+  assert.equal((await admin.post('/api/lotes', { quadra_id: q120, codigo: '01' })).status, 201, 'mesmo número em outra quadra é permitido');
+  assert.equal((await admin.post('/api/lotes', { quadra_id: q115, codigo: '02' })).status, 201);
+
+  // disponível imediatamente para cadastro de encomendas (sem republicar o sistema)
+  r = await ctrl.get(`/api/lotes?quadra_id=${q115}&ativos=1`);
+  assert.deepEqual(r.data.map((l) => l.codigo), ['01', '02']);
+  const enc = await ctrl.post('/api/encomendas', { lote_id: l115, descricao: 'Primeira da quadra 115', transportadora_id: ids.correios });
+  assert.equal(enc.status, 201);
+  assert.equal(enc.data.quadra, '115');
+
+  // pesquisa
+  r = await admin.get('/api/lotes?q=115');
+  assert.ok(r.data.length >= 2 && r.data.every((l) => l.quadra_codigo.includes('115') || l.codigo.includes('115')));
+  r = await admin.get('/api/lotes?q=115%2F02');
+  assert.deepEqual(r.data.map((l) => `${l.quadra_codigo}/${l.codigo}`), ['115/02']);
+  r = await admin.get(`/api/lotes?quadra_id=${q115}`);
+  assert.equal(r.data.find((l) => l.id === l115).total_encomendas, 1);
+
+  // edição: lote com encomenda não muda de identificação; demais campos sim
+  r = await admin.put(`/api/lotes/${l115}`, { codigo: '03' });
+  assert.equal(r.status, 409);
+  assert.match(r.data.erro, /preservar o histórico/);
+  r = await admin.put(`/api/quadras/${q115}`, { codigo: '116' });
+  assert.equal(r.status, 409, 'quadra com encomendas não muda de identificação');
+  r = await admin.put(`/api/lotes/${l115}`, { observacao: 'Portão lateral' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.observacao, 'Portão lateral');
+  const l2 = (await admin.get(`/api/lotes?quadra_id=${q115}`)).data.find((l) => l.codigo === '02').id;
+  assert.equal((await admin.put(`/api/lotes/${l2}`, { codigo: '01' })).status, 409, 'renomear para lote existente');
+  r = await admin.put(`/api/lotes/${l2}`, { codigo: '04' });
+  assert.equal(r.status, 200, 'lote sem encomendas pode ser corrigido');
+  assert.equal(r.data.codigo, '04');
+
+  // exclusão: bloqueada com encomendas (sugere desativar), permitida sem histórico, sempre justificada e auditada
+  r = await admin.del(`/api/lotes/${l115}`, { justificativa: 'Teste' });
+  assert.equal(r.status, 409);
+  assert.equal(r.data.pode_desativar, true);
+  assert.equal((await admin.del(`/api/lotes/${l2}`, {})).status, 400, 'justificativa obrigatória');
+  assert.equal((await admin.del(`/api/lotes/${l2}`, { justificativa: 'Cadastrado por engano' })).status, 200);
+  assert.equal((await admin.get(`/api/lotes/${l2}`)).status, 404);
+  assert.equal((await admin.del(`/api/quadras/${q115}`, { justificativa: 'x' })).status, 409, 'quadra com encomendas não é excluída');
+  assert.equal((await admin.del(`/api/quadras/${q120}`, { justificativa: 'Quadra cadastrada por engano' })).status, 200, 'quadra sem encomendas é excluída com seus lotes');
+  const aud = (await admin.get('/api/auditoria?acao=LOTE_EXCLUIDO')).data.itens[0];
+  assert.equal(aud.justificativa, 'Cadastrado por engano');
+  assert.equal(aud.detalhes.lote, '04');
+  assert.equal((await admin.get('/api/auditoria?acao=QUADRA_EXCLUIDA')).data.itens[0].detalhes.lotes_excluidos.length, 1);
+
+  // desativação preserva encomendas e histórico
+  r = await admin.put(`/api/lotes/${l115}`, { ativo: false });
+  assert.equal(r.status, 200);
+  assert.equal((await ctrl.get(`/api/lotes?quadra_id=${q115}&ativos=1`)).data.length, 0, 'some da lista de cadastro');
+  assert.equal((await ctrl.post('/api/encomendas', { lote_id: l115, descricao: 'x', transportadora_id: ids.correios })).status, 400, 'não recebe novas encomendas');
+  const e = (await ctrl.get(`/api/encomendas/${enc.data.id}`)).data;
+  assert.equal(e.status, 'PENDENTE');
+  assert.equal(e.lote, '01', 'encomenda antiga continua vinculada e consultável');
+  assert.equal((await ctrl.post('/api/retiradas', { encomenda_ids: [enc.data.id], retirado_por_nome: 'Morador 115' })).status, 201, 'baixa de encomenda de lote desativado continua possível');
+  const det = (await admin.get(`/api/lotes/${l115}`)).data;
+  assert.equal(det.total_encomendas, 1);
+  assert.ok(det.alteracoes.some((a) => a.acao === 'LOTE_EDITADO' && a.detalhes.ativo), 'histórico do cadastro');
+  assert.ok(det.atualizado_por, 'responsável pela última alteração');
+  assert.equal((await admin.put(`/api/lotes/${l115}`, { ativo: true })).status, 200, 'reativação');
+});
+
+test('compatibilidade: reimportar a relação oficial preserva cadastros manuais, encomendas e histórico', async () => {
+  const antes = (await admin.get('/api/lotes')).data;
+  const encAntes = (await admin.get('/api/encomendas?incluir_canceladas=1')).data.total;
+  // arquivo oficial com parte dos registros antigos + novos lotes; registros manuais ausentes do arquivo
+  const csv = 'Quadra,Lote\nB,01\nB,02\nB,10\n07,00\nB,11\nB,12\n';
+  const imp = await lerImportacao(csv);
+  const p = await previa(admin, imp);
+  assert.equal(p.data.resumo.novos, 2);
+  assert.equal(p.data.resumo.ja_existentes, 4);
+  assert.ok(p.data.resumo.lotes_ausentes_no_arquivo > 0, 'lotes manuais/antigos ausentes do arquivo são apenas informados');
+  const r = await confirmar(admin, imp, p.data.token);
+  assert.equal(r.status, 201);
+  assert.equal(r.data.desativados, 0, 'sem a opção, nada é desativado');
+  const depois = (await admin.get('/api/lotes')).data;
+  assert.equal(depois.length, antes.length + 2);
+  for (const l of antes) {
+    const d = depois.find((x) => x.id === l.id);
+    assert.ok(d, `lote ${l.quadra_codigo}/${l.codigo} preservado`);
+    assert.equal(d.codigo, l.codigo); assert.equal(d.ativo, l.ativo); assert.equal(d.quadra_id, l.quadra_id);
+  }
+  assert.equal((await admin.get('/api/encomendas?incluir_canceladas=1')).data.total, encAntes, 'encomendas intactas');
 });
 
 test('auditoria: registra todas as operações com usuário e horário', async () => {
   const r = await admin.get('/api/auditoria?por_pagina=200');
-  const acoes = new Set(r.data.itens.map((a) => a.acao));
+  const acoes = new Set(r.data.acoes);
   for (const a of ['CONFIGURACAO_INICIAL', 'LOGIN', 'USUARIO_CRIADO', 'ENCOMENDA_CADASTRADA', 'ENCOMENDA_EDITADA', 'RETIRADA_REGISTRADA',
     'RETIRADA_OUTRO_PLANTAO_REGISTRADA', 'RETIRADA_CORRIGIDA', 'RETIRADA_ESTORNADA', 'ENCOMENDA_CANCELADA', 'ANEXO_ADICIONADO',
-    'ANEXO_REMOVIDO', 'QUADRAS_LOTES_IMPORTADOS', 'LOGIN_BLOQUEADO', 'RELATORIO_EXPORTADO']) assert.ok(acoes.has(a), a);
+    'ANEXO_REMOVIDO', 'QUADRAS_LOTES_IMPORTADOS', 'LOGIN_BLOQUEADO', 'RELATORIO_EXPORTADO',
+    'QUADRA_CRIADA', 'LOTE_CRIADO', 'LOTE_EDITADO', 'LOTE_EXCLUIDO', 'QUADRA_EXCLUIDA']) assert.ok(acoes.has(a), a);
   assert.ok(r.data.itens.every((a) => a.ocorrido_em && a.acao));
+  const criada = (await admin.get('/api/auditoria?acao=ENCOMENDA_CADASTRADA&por_pagina=1')).data.itens[0];
+  assert.ok(criada.usuario_nome && criada.encomenda_id && criada.entidade_id, 'usuário e encomenda identificados');
   const f = await admin.get(`/api/auditoria?encomenda_id=${ids.e1}`);
   assert.ok(f.data.itens.every((a) => a.encomenda_id === ids.e1));
 });
@@ -494,12 +623,19 @@ test('configurações e troca de senha', async () => {
 });
 
 test('backup: criação e download de cópia íntegra do banco', async () => {
+  if (ALVO === 'cloudflare') {
+    // No Cloudflare o backup é feito pelo D1 (Time Travel / wrangler d1 export).
+    const b = await admin.get('/api/backups');
+    assert.equal(b.data.suportado, false);
+    assert.equal((await admin.post('/api/backups')).status, 400);
+    return;
+  }
   let r = await admin.post('/api/backups');
   assert.equal(r.status, 201);
   assert.equal((await ctrl.get('/api/backups')).status, 403);
   r = await admin.get('/api/backups');
-  assert.ok(r.data.length >= 1);
-  const dl = await admin.get(`/api/backups/${encodeURIComponent(r.data[0].nome)}`, { raw: true });
+  assert.ok(r.data.suportado && r.data.itens.length >= 1);
+  const dl = await admin.get(`/api/backups/${encodeURIComponent(r.data.itens[0].nome)}`, { raw: true });
   const buf = Buffer.from(await dl.arrayBuffer());
   assert.equal(buf.subarray(0, 15).toString(), 'SQLite format 3');
   assert.equal((await admin.get('/api/backups/..%2F..%2Fencomendas.db')).status, 404);

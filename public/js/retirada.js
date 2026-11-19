@@ -37,7 +37,26 @@ export function padAssinatura(container) {
   };
 }
 
+// Fotos grandes (câmera do celular) são reduzidas no navegador antes do envio:
+// economiza espaço e respeita o limite por arquivo do armazenamento gratuito.
+async function reduzirImagem(arquivo, ladoMax = 1600, qualidade = 0.82) {
+  if (!/^image\/(jpeg|png|webp)$/.test(arquivo.type) || arquivo.size < 400 * 1024) return arquivo;
+  try {
+    const bmp = await createImageBitmap(arquivo);
+    const esc = Math.min(1, ladoMax / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * esc);
+    cv.height = Math.round(bmp.height * esc);
+    cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+    const blob = await new Promise((ok) => cv.toBlob(ok, 'image/jpeg', qualidade));
+    return blob && blob.size < arquivo.size ? new File([blob], (arquivo.name || 'foto').replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : arquivo;
+  } catch {
+    return arquivo;
+  }
+}
+
 export async function enviarAnexo(encomendaId, tipo, arquivo, nome, retiradaId) {
+  if (tipo === 'FOTO') { arquivo = await reduzirImagem(arquivo); nome = arquivo.name || nome; }
   const fd = new FormData();
   fd.append('tipo', tipo);
   if (retiradaId) fd.append('retirada_id', retiradaId);

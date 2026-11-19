@@ -1,11 +1,10 @@
-'use strict';
 // Construção da consulta de encomendas com todos os filtros (usada na pesquisa, histórico e relatórios).
-const { todayLocal, addDays, daysBetween, isDate } = require('./time');
-const { int, likeEscape } = require('./util');
+import { todayLocal, addDays, daysBetween, isDate } from './time.js';
+import { int, likeEscape } from './util.js';
 
-const STATUS = ['PENDENTE', 'RETIRADA', 'RETIRADA_OUTRO_PLANTAO', 'CANCELADA'];
+export const STATUS = ['PENDENTE', 'RETIRADA', 'RETIRADA_OUTRO_PLANTAO', 'CANCELADA'];
 
-const SELECT_BASE = `
+export const SELECT_BASE = `
 SELECT e.id, e.codigo, e.recebido_em, e.recebido_data, e.descricao, e.endereco_complementar, e.codigo_rastreio,
        e.observacoes, e.status, e.cadastrado_em, e.atualizado_em, e.lote_id,
        l.codigo lote, l.endereco lote_endereco, q.id quadra_id, q.codigo quadra,
@@ -28,7 +27,7 @@ LEFT JOIN usuarios ue ON ue.id = r.entregue_por_id
 LEFT JOIN usuarios ul ON ul.id = r.lancado_por_id`;
 
 // f: objeto com filtros (geralmente req.query)
-function montarFiltros(f) {
+export function montarFiltros(f) {
   const where = [];
   const p = [];
   const like = (v) => likeEscape(v);
@@ -92,7 +91,7 @@ const ORDENS = {
   quadra: 'q.codigo COLLATE NOCASE, CAST(l.codigo AS INTEGER), l.codigo, e.recebido_em',
 };
 
-function enriquecer(row, hoje = todayLocal()) {
+export function enriquecer(row, hoje = todayLocal()) {
   if (!row) return row;
   row.dias_espera = row.status === 'PENDENTE'
     ? daysBetween(row.recebido_data, hoje)
@@ -100,23 +99,18 @@ function enriquecer(row, hoje = todayLocal()) {
   return row;
 }
 
-function buscar(db, f, { paginar = true, limiteMax = 200 } = {}) {
+export async function buscar(db, f, { limiteMax = 500 } = {}) {
   const { where, params } = montarFiltros(f);
   const ordem = ORDENS[f.ordem] || ORDENS.recebido_desc;
-  const total = db.prepare(`SELECT COUNT(*) n FROM (${SELECT_BASE} ${where})`).get(...params).n;
-  let sql = `${SELECT_BASE} ${where} ORDER BY ${ordem}`;
-  const extra = [];
-  let pagina = 1;
-  let por = total;
-  if (paginar) {
-    por = Math.min(Math.max(int(f.por_pagina) || 25, 1), limiteMax);
-    pagina = Math.max(int(f.pagina) || 1, 1);
-    sql += ' LIMIT ? OFFSET ?';
-    extra.push(por, (pagina - 1) * por);
-  }
+  const total = (await db.prepare(`SELECT COUNT(*) n FROM (${SELECT_BASE} ${where})`).bind(...params).first()).n;
+  const por = Math.min(Math.max(int(f.por_pagina) || 25, 1), limiteMax);
+  const pagina = Math.max(int(f.pagina) || 1, 1);
   const hoje = todayLocal();
-  const itens = db.prepare(sql).all(...params, ...extra).map((r) => enriquecer(r, hoje));
-  return { total, pagina, por_pagina: por, itens };
+  const { results } = await db.prepare(`${SELECT_BASE} ${where} ORDER BY ${ordem} LIMIT ? OFFSET ?`)
+    .bind(...params, por, (pagina - 1) * por).all();
+  return { total, pagina, por_pagina: por, itens: results.map((r) => enriquecer(r, hoje)) };
 }
 
-module.exports = { SELECT_BASE, montarFiltros, buscar, enriquecer, STATUS };
+export async function carregarEncomenda(db, id) {
+  return enriquecer(await db.prepare(`${SELECT_BASE} WHERE e.id = ?`).bind(id).first());
+}

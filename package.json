@@ -2,15 +2,22 @@
   "name": "gestao-encomendas-fazenda-da-ilha",
   "version": "1.0.0",
   "description": "Gestão de encomendas da portaria – Fazenda da Ilha",
-  "main": "server/index.js",
+  "main": "src/node.js",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
-    "test": "node --test test/api.test.js",
-    "test:e2e": "node --test test/e2e.test.js",
-    "test:all": "node --test --test-concurrency=1 test/api.test.js test/e2e.test.js",
-    "admin": "node scripts/admin.js",
-    "backup": "node scripts/admin.js backup"
+    "start": "node src/node.js",
+    "dev": "node --watch src/node.js",
+    "test": "node --test --test-concurrency=1 test/api.test.js",
+    "test:cloudflare": "ALVO=cloudflare node --test --test-concurrency=1 test/api.test.js",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e.test.js",
+    "test:e2e:cloudflare": "ALVO=cloudflare node --test --test-concurrency=1 test/e2e.test.js",
+    "test:tudo": "npm test && npm run test:cloudflare && npm run test:e2e && npm run test:e2e:cloudflare",
+    "cf:dev": "wrangler dev",
+    "cf:migrar:local": "wrangler d1 migrations apply encomendas-fazenda-da-ilha --local",
+    "cf:migrar": "wrangler d1 migrations apply encomendas-fazenda-da-ilha --remote",
+    "cf:publicar": "wrangler deploy",
+    "backup:cloudflare": "node scripts/backup-cloudflare.js",
+    "backup": "node scripts/admin.js backup",
+    "admin": "node scripts/admin.js"
   },
   "repository": {
     "type": "git",
@@ -22,18 +29,20 @@
   },
   "homepage": "https://github.com/theuzxl13-oss/gerenciamento-de-encomendas#readme",
   "dependencies": {
+    "@hono/node-server": "^1.19.19",
     "better-sqlite3": "^13.2.0",
-    "exceljs": "^4.4.0",
-    "express": "^5.3.0",
-    "helmet": "^8.3.0",
-    "multer": "^2.5.0",
-    "pdfkit": "^0.20.2"
+    "hono": "^4.13.19"
   },
   "devDependencies": {
-    "playwright": "^1.63.0"
+    "exceljs": "^4.4.0",
+    "jspdf": "^3.0.4",
+    "jspdf-autotable": "^5.0.9",
+    "playwright": "^1.63.0",
+    "wrangler": "^4.165.0"
   },
   "private": true,
   "engines": {
     "node": ">=20"
-  }
+  },
+  "type": "module"
 }

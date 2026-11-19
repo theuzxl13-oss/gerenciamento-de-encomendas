@@ -21,7 +21,7 @@ const MENU = [
   { rota: 'nova', rotulo: 'Nova encomenda', icone: 'nova', pagina: nova },
   { rota: 'pendentes', rotulo: 'Encomendas pendentes', icone: 'caixa', pagina: pendentes, badge: true },
   { rota: 'historico', rotulo: 'Histórico de encomendas', icone: 'historico', pagina: historico },
-  { rota: 'quadras', rotulo: 'Quadras e lotes', icone: 'mapa', pagina: quadras },
+  { rota: 'quadras', rotulo: 'Quadras e lotes', rotuloAdmin: 'Gerenciar quadras e lotes', icone: 'mapa', pagina: quadras },
   { rota: 'relatorios', rotulo: 'Relatórios', icone: 'relatorio', pagina: relatorios },
   { rota: 'usuarios', rotulo: 'Usuários', icone: 'usuarios', pagina: usuarios, admin: true },
   { rota: 'auditoria', rotulo: 'Auditoria', icone: 'escudo', pagina: auditoria, admin: true },
@@ -50,7 +50,7 @@ function layout() {
       <nav class="nav">
         ${MENU.filter((m) => !m.admin || ehAdmin()).map((m, i) => html`
           ${i === 6 ? html`<div class="grupo">Administração</div>` : ''}
-          <a href="#/${m.rota}" data-rota="${m.rota}">${icon(m.icone)}<span>${m.rotulo}</span>${m.badge ? html`<span class="badge-nav hidden" id="badge-pend"></span>` : ''}</a>`)}
+          <a href="#/${m.rota}" data-rota="${m.rota}">${icon(m.icone)}<span>${ehAdmin() && m.rotuloAdmin ? m.rotuloAdmin : m.rotulo}</span>${m.badge ? html`<span class="badge-nav hidden" id="badge-pend"></span>` : ''}</a>`)}
       </nav>
       <div class="sidebar-foot">Livro digital da portaria<br>Horário de Brasília</div>
     </aside>
@@ -100,8 +100,9 @@ async function rotear() {
   if (!$('#layout')) layout();
   if (def.admin && !ehAdmin()) { navegar('#/dashboard'); return; }
   $$('.nav a').forEach((a) => a.classList.toggle('ativo', a.dataset.rota === (def.pai || def.rota)));
-  $('#titulo-pagina').textContent = def.rotulo;
-  document.title = `${def.rotulo} – Encomendas Fazenda da Ilha`;
+  const rotulo = ehAdmin() && def.rotuloAdmin ? def.rotuloAdmin : def.rotulo;
+  $('#titulo-pagina').textContent = rotulo;
+  document.title = `${rotulo} – Encomendas Fazenda da Ilha`;
   const el = $('#conteudo');
   const id = ++renderId;
   el.innerHTML = '<div class="boot">Carregando…</div>';

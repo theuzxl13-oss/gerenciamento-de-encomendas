@@ -1,4 +1,5 @@
-import { api, qs, baixar } from '../api.js';
+import { api, qs } from '../api.js';
+import { exportarEncomendas, exportarFuncionarios } from '../exportar.js';
 import { html, mount, $, icon, toast, statusBadge, endereco, fmtDataHora, fmtRetirada, opcoes, hojeSP, addDias, lerForm } from '../ui.js';
 import { estado, lotesDaQuadra } from '../estado.js';
 
@@ -56,7 +57,7 @@ export async function render(el) {
   };
   const exp = async (formato, btn) => {
     btn.disabled = true;
-    try { await baixar('/relatorios' + qs({ ...params(), formato })); } catch (e) { toast(e.message, 'erro'); } finally { btn.disabled = false; }
+    try { await exportarEncomendas(params(), formato); } catch (e) { toast(e.message, 'erro'); } finally { btn.disabled = false; }
   };
   $('#pdf', el).addEventListener('click', (e) => exp('pdf', e.currentTarget));
   $('#xlsx', el).addEventListener('click', (e) => exp('xlsx', e.currentTarget));
@@ -84,8 +85,8 @@ export async function render(el) {
 
   const ff = $('#f-func', el);
   const pf = () => lerForm(ff);
-  $('#pdf-f', el).addEventListener('click', () => baixar('/relatorios/funcionarios' + qs({ ...pf(), formato: 'pdf' })).catch((e) => toast(e.message, 'erro')));
-  $('#xlsx-f', el).addEventListener('click', () => baixar('/relatorios/funcionarios' + qs({ ...pf(), formato: 'xlsx' })).catch((e) => toast(e.message, 'erro')));
+  $('#pdf-f', el).addEventListener('click', () => exportarFuncionarios(pf(), 'pdf').catch((e) => toast(e.message, 'erro')));
+  $('#xlsx-f', el).addEventListener('click', () => exportarFuncionarios(pf(), 'xlsx').catch((e) => toast(e.message, 'erro')));
   $('#ver-f', el).addEventListener('click', async () => {
     try {
       const r = await api.get('/relatorios/funcionarios' + qs(pf()));

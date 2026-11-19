@@ -1,4 +1,4 @@
-'use strict';
+
 // Utilitários de data/hora no fuso America/Sao_Paulo.
 // Instantes são gravados em UTC (ISO-8601); datas locais (YYYY-MM-DD) são calculadas aqui.
 
@@ -81,7 +81,7 @@ function fmtDate(dateStr) {
   return `${d}/${m}/${y}`;
 }
 
-module.exports = {
+export {
   TZ, localParts, localToUtc, todayLocal, addDays, daysBetween, nowIso,
   isDate, isTime, fmtDateTime, fmtDate, offsetMinutes,
 };

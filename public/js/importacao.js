@@ -1,5 +1,7 @@
 // Assistente de importação da relação oficial de quadras e lotes: arquivo → prévia → confirmação → resultado.
-import { api, baixar } from './api.js';
+import { api } from './api.js';
+import { excelJS, modeloQuadrasLotes } from './exportar.js';
+import { parseCsv, matrizDeExcel, extrairLinhas, sha256Hex } from './planilha.js';
 import { html, mount, $, $$, icon, toast, abrirModal, fmtDataHora } from './ui.js';
 
 const CLASSE = {
@@ -61,20 +63,38 @@ export function abrirImportacao({ aoConcluir } = {}) {
       <div class="alerta info">${icon('info')}<div>Somente <strong>Quadra</strong> e <strong>Lote</strong> são importados, exatamente como escritos no arquivo (zeros à esquerda preservados: "01" continua "01").
         Outras colunas são ignoradas. Registros já cadastrados e duplicados (inclusive "1" × "01") são ignorados. Nenhum registro é apagado.</div></div>
       <div class="campo"><label for="imp-arq">Arquivo</label><input type="file" id="imp-arq" accept=".csv,.xlsx,text/csv"></div>`);
-    $('#imp-modelo', passo).addEventListener('click', (e) => { e.preventDefault(); baixar('/quadras-lotes/modelo.xlsx').catch((er) => toast(er.message, 'erro')); });
+    $('#imp-modelo', passo).addEventListener('click', (e) => { e.preventDefault(); modeloQuadrasLotes().catch((er) => toast(er.message, 'erro')); });
     $('#imp-arq', passo).addEventListener('change', (e) => { arquivo = e.target.files[0] || null; });
     bPrevia.classList.remove('hidden');
     bConf.classList.add('hidden');
   }
 
-  const fd = () => { const f = new FormData(); f.append('arquivo', arquivo, arquivo.name); return f; };
+  // Dados lidos do arquivo no navegador (enviados na prévia e, idênticos, na confirmação).
+  let dados = null;
+
+  async function lerArquivo() {
+    const bytes = new Uint8Array(await arquivo.arrayBuffer());
+    const nome = arquivo.name.toLowerCase();
+    let matriz;
+    if (nome.endsWith('.xlsx')) {
+      const E = await excelJS();
+      const wb = new E.Workbook();
+      try { await wb.xlsx.load(bytes.buffer); } catch { throw new Error('Não foi possível ler a planilha Excel. Verifique se o arquivo é .xlsx válido.'); }
+      matriz = matrizDeExcel(wb);
+    } else if (nome.endsWith('.csv') || nome.endsWith('.txt')) {
+      matriz = parseCsv(new TextDecoder('utf-8').decode(bytes));
+    } else throw new Error('Formato não suportado. Envie um arquivo .csv ou .xlsx.');
+    const { linhas, colunas_ignoradas } = extrairLinhas(matriz);
+    return { arquivo_nome: arquivo.name, arquivo_sha256: await sha256Hex(bytes), colunas_ignoradas, linhas };
+  }
 
   async function gerarPrevia() {
     if (!arquivo) { toast('Selecione o arquivo.', 'erro'); return; }
     bPrevia.disabled = true;
     $('#imp-status', m.el).textContent = 'Analisando arquivo…';
     try {
-      previa = await api.post('/quadras-lotes/importar/previa', fd());
+      dados = await lerArquivo();
+      previa = await api.post('/quadras-lotes/importar/previa', dados);
       filtro = ''; pagina = 1;
       telaPrevia();
     } catch (err) {
@@ -140,10 +160,10 @@ export function abrirImportacao({ aoConcluir } = {}) {
     bConf.disabled = true;
     $('#imp-status', m.el).textContent = 'Gravando no banco de dados…';
     try {
-      const f = fd();
-      f.append('hash_previa', previa.hash);
       const des = $('#imp-desativar', passo);
-      if (des && des.checked) f.append('desativar_ausentes', '1');
+      const f = new FormData();
+      f.append('dados', JSON.stringify({ ...dados, token: previa.token, desativar_ausentes: !!(des && des.checked) }));
+      f.append('arquivo', arquivo, arquivo.name); // cópia do arquivo original para rastreabilidade
       const r = await api.post('/quadras-lotes/importar', f);
       mount(passo, html`<div class="alerta sucesso">${icon('check')}<div><strong>Importação concluída e gravada no banco de dados.</strong>
         Registrada em ${fmtDataHora(r.realizada_em)} por ${r.usuario} (importação nº ${r.importacao_id}).</div></div>

@@ -101,12 +101,16 @@ function desenhar(el, navegar, pre = {}) {
     try {
       const enc = await api.post('/encomendas', d);
       toast(`Encomenda ${enc.codigo} registrada.`);
-      await carregarQuadrasLotes();
+      // A tela é redesenhada na hora; a contagem de pendentes do lote é atualizada em segundo plano,
+      // sem apagar o que o porteiro já começou a digitar no próximo cadastro.
+      const lote = estado.lotes.find((l) => String(l.id) === String(d.lote_id));
+      if (lote) lote.pendentes = (lote.pendentes || 0) + 1;
       if (outra) {
         // mantém data, quadra, lote, transportadora e recebedor para agilizar volumes do mesmo endereço
         desenhar(el, navegar, { data: d.data, quadra_id: d.quadra_id, lote_id: d.lote_id, transportadora_id: d.transportadora_id, recebido_por_id: d.recebido_por_id });
         $('#n-desc', el).focus();
       } else sucesso(el, enc, navegar);
+      carregarQuadrasLotes().catch(() => {});
     } catch (err) {
       marcarErro(f, err.message);
       btns.forEach((b) => { b.disabled = false; });

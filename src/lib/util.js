@@ -1,4 +1,4 @@
-'use strict';
+
 
 class HttpError extends Error {
   constructor(status, message, extra) {
@@ -41,4 +41,4 @@ function likeEscape(s) {
   return '%' + String(s).replace(/[\\%_]/g, (c) => '\\' + c) + '%';
 }
 
-module.exports = { HttpError, bad, forbidden, notFound, conflict, str, text, req, int, likeEscape };
+export { HttpError, bad, forbidden, notFound, conflict, str, text, req, int, likeEscape };

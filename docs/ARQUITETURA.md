@@ -13,32 +13,39 @@ com histórico permanente, auditável e consultável de qualquer dispositivo da 
 
 ## 2. Decisões de arquitetura
 
+> **Revisão 2 (publicação gratuita):** o servidor foi migrado de Express para **Hono**, que roda tanto no
+> **Cloudflare Workers** (produção gratuita, banco **D1**) quanto no **Node.js** (servidor próprio e testes).
+> As regras de negócio, o SQL e o esquema do banco são os mesmos nos dois ambientes.
+
 | Camada | Escolha | Motivo |
 |---|---|---|
-| Servidor | **Node.js 22 + Express 5** | Simples de hospedar (um único processo), sem build, ampla documentação. |
-| Banco | **SQLite (better-sqlite3) em modo WAL** | Banco relacional transacional, persistente em disco, sem servidor separado para administrar. Suporta com folga o volume de uma portaria (milhares de encomendas/ano). Todas as operações são feitas no servidor — qualquer computador/celular da rede vê os mesmos dados. O SQL é padrão e pode migrar para PostgreSQL se um dia for necessário. |
-| Front-end | **SPA em JavaScript puro (ES modules) + CSS próprio** | Sem etapa de build, carregamento rápido no computador da portaria, responsivo para celular. |
-| Autenticação | Sessão no servidor (token aleatório de 256 bits em cookie `HttpOnly`, `SameSite=Strict`; apenas o hash SHA-256 fica no banco) | Permite encerrar sessões, expira por inatividade, não expõe token a JavaScript. |
-| Senhas | `scrypt` (módulo `crypto` nativo) com salt individual | Algoritmo resistente a força bruta, sem dependências nativas. |
-| Proteções | Bloqueio após 5 tentativas de login, cabeçalho anti-CSRF obrigatório em operações de escrita, Helmet (cabeçalhos de segurança), validação no servidor | |
-| Comprovantes | Arquivos em `data/uploads/` com nome aleatório, servidos **somente** por rota autenticada; hash SHA-256 registrado | Assinatura (desenhada na tela), fotos e documentos. |
-| Relatórios | PDF (pdfkit) e Excel (exceljs) gerados no servidor | |
-| Importação | Planilha `.xlsx` ou `.csv` de quadras e lotes, com simulação antes de gravar | Relação oficial ainda será fornecida — **nenhum endereço é inventado**. |
-| Backup | Cópia consistente do banco (`VACUUM INTO`) automática diária + manual pelo administrador, com retenção configurável | Recomendado copiar a pasta `data/` para outro local/nuvem. |
-| Fuso horário | **America/Sao_Paulo** em todas as datas exibidas, filtros e "hoje" | Instantes gravados em UTC (ISO-8601) + data local gravada separadamente para filtros. |
+| Servidor | **Hono** (`src/app.js`, rotas em `src/routes/`) — entrada `src/worker.js` (Cloudflare) e `src/node.js` (Node) | Um único código para os dois ambientes; leve o bastante para o limite de CPU do plano gratuito. |
+| Banco | **Cloudflare D1** (SQLite gerenciado) em produção; **SQLite local** (better-sqlite3) no Node, por um adaptador com a mesma interface do D1 (`src/runtime/sqlite-d1.js`) | Banco relacional transacional e persistente, gratuito, acessível de qualquer dispositivo. Esquema versionado em `migrations/` (aplicado com `wrangler d1 migrations apply` ou automaticamente no Node). |
+| Atomicidade | `db.batch()` (transação única) + **triggers** no banco | Baixa, auditoria e alterações gravadas juntas ou nada; a trava contra baixa duplicada está no próprio banco. |
+| Front-end | **SPA em JavaScript puro (ES modules) + CSS próprio**, servida como arquivos estáticos (Workers Assets) | Sem build; carregamento rápido; responsivo. |
+| Autenticação | Sessão no servidor (token de 256 bits em cookie `HttpOnly`, `SameSite=Strict`; só o hash SHA-256 no banco) | Encerramento de sessões, expiração por inatividade. |
+| Senhas | **PBKDF2-SHA256** (Web Crypto), 100 mil iterações (ajustável), salt individual | Disponível igualmente no Workers e no Node. |
+| Proteções | Bloqueio após 5 tentativas, cabeçalho anti-CSRF, CSP (`public/_headers`), validação no servidor | |
+| Comprovantes | Armazenamento plugável: **D1** (padrão, gratuito), **R2** (opcional) ou disco (Node); acesso só autenticado; SHA-256 registrado | Fotos reduzidas no navegador antes do envio. |
+| Relatórios | Servidor entrega dados e totais (SQL); **PDF (jsPDF) e Excel (ExcelJS) gerados no navegador** | Mantém cada requisição dentro do limite de CPU do plano gratuito. |
+| Importação | Planilha lida **no navegador** (`public/js/planilha.js`); servidor revalida, classifica e grava | Prévia obrigatória e confirmação vinculada à prévia por token. |
+| Backup | Cloudflare: D1 Time Travel + `npm run backup:cloudflare`; Node: cópia diária automática | |
+| Fuso horário | **America/Sao_Paulo** em todas as datas exibidas, filtros e "hoje" | Instantes em UTC + data local gravada para filtros. |
 
-### Diagrama
+### Diagrama (produção na Cloudflare)
 
 ```
  Navegador (portaria / celular / administração)
-        │  HTTPS (proxy reverso recomendado)
+        │  HTTPS
         ▼
- Express ── /api/*  (JSON, autenticação, permissões, auditoria)
-   │  └── /         (arquivos estáticos da SPA)
-   ├── better-sqlite3 ──► data/encomendas.db   (WAL, triggers de proteção)
-   ├── data/uploads/   (comprovantes — acesso apenas autenticado)
-   └── data/backups/   (backups automáticos e manuais)
+ Cloudflare Workers ── /api/*  → Hono (src/worker.js): autenticação, permissões, regras, auditoria
+        │           └─ /*      → arquivos estáticos (public/) com cabeçalhos de segurança
+        ├── D1 (SQLite)  encomendas, retiradas, quadras, lotes, usuários, auditoria, comprovantes
+        └── R2 (opcional) comprovantes grandes
 ```
+
+No servidor próprio, `src/node.js` serve as mesmas rotas com SQLite em `data/encomendas.db`,
+comprovantes em `data/uploads/` e backups em `data/backups/`.
 
 ## 3. Perfis e permissões
 
@@ -51,7 +58,7 @@ com histórico permanente, auditável e consultável de qualquer dispositivo da 
 | Editar dados de encomenda pendente (com justificativa) | ✔ qualquer | ✔ somente as que cadastrou, nas primeiras 24 h |
 | Corrigir retirada, estornar baixa, cancelar encomenda (com justificativa) | ✔ | ✘ |
 | Relatórios e exportação PDF/Excel | ✔ | ✔ |
-| Quadras e lotes (cadastro / importação) | ✔ | consulta |
+| Gerenciar quadras e lotes: cadastrar, editar, desativar, excluir (só sem encomendas), importar | ✔ | consulta e pesquisa |
 | Usuários, configurações, backup, auditoria geral | ✔ | ✘ |
 
 ## 4. Regras de negócio (item 16)
@@ -100,10 +107,12 @@ configuracoes (chave/valor)   contadores (sequência dos identificadores)
 **sessoes** — `id` (hash do token), `usuario_id`, `criado_em`, `ultimo_uso_em`,
 `expira_em`, `ip`, `user_agent`.
 
-**quadras** — `id`, `codigo` (único), `descricao`, `ativo`, `criado_em`, `atualizado_em`.
+**quadras** — `id`, `codigo` (único, texto exato), `descricao`, `ativo`, `criado_em`, `criado_por_id`,
+`atualizado_em`, `atualizado_por_id`. Sem limite de numeração (ex.: 115, 120).
 
 **lotes** — `id`, `quadra_id`, `codigo` (único por quadra), `endereco`, `observacao`,
-`ativo`, `criado_em`, `atualizado_em`.
+`ativo`, `criado_em`, `criado_por_id`, `atualizado_em`, `atualizado_por_id`. Triggers: lote/quadra com encomendas
+não pode ser excluído nem ter a identificação alterada (somente desativado).
 
 **transportadoras** — `id`, `nome` (único), `ativo`, `ordem`, `criado_em`, `criado_por_id`.
 Iniciais: Correios, Mercado Livre, Shopee, Amazon, Magazine Luiza, Transportadora,
@@ -143,7 +152,8 @@ tolerância de horário, backup automático e retenção.
 
 ### Importação da relação oficial de quadras e lotes
 
-Módulo `server/importacao.js`, isolado do cadastro manual. Fluxo: **arquivo → prévia → confirmação**.
+Leitura no navegador (`public/js/planilha.js`); classificação e gravação em `src/lib/importacao.js` e
+`src/routes/importacao.js`, isolados do cadastro manual. Fluxo: **arquivo → prévia → confirmação**.
 
 1. **Leitura**: CSV (vírgula, ponto e vírgula ou tabulação; BOM tolerado) ou XLSX. Só as colunas
    *Quadra* e *Lote* são usadas e as demais aparecem na prévia como ignoradas. O valor é gravado como
@@ -154,11 +164,11 @@ Módulo `server/importacao.js`, isolado do cadastro manual. Fluxo: **arquivo →
    A equivalência remove zeros à esquerda só para *comparar*, nunca para gravar. O cadastro manual usa a
    mesma regra.
 3. **Prévia** (`POST /api/quadras-lotes/importar/previa`): retorna os totais, a lista registro a registro,
-   a conferência da sequência de quadras (primeira, última, faltantes, quadras novas) e o hash SHA-256
-   do arquivo. Nada é gravado.
-4. **Confirmação** (`POST /api/quadras-lotes/importar`): exige `hash_previa` igual ao hash do arquivo
-   enviado. Grava tudo numa única transação, registra a importação em `importacoes` e na auditoria e
-   guarda a cópia do arquivo em `data/importacoes/`. Opcionalmente **desativa** (nunca apaga) os lotes
+   a conferência da sequência de quadras (primeira, última, faltantes, quadras novas) e um *token*
+   que amarra a confirmação aos mesmos dados (hash SHA-256 do arquivo + linhas). Nada é gravado.
+4. **Confirmação** (`POST /api/quadras-lotes/importar`): exige o token da prévia dos mesmos dados
+   (dados diferentes são recusados). Grava tudo numa única transação, registra a importação em `importacoes` e na auditoria e
+   guarda a cópia do arquivo (D1/R2/disco). Opcionalmente **desativa** (nunca apaga) os lotes
    ausentes do arquivo.
 5. **Histórico**: `GET /api/quadras-lotes/importacoes`.
 
@@ -177,10 +187,10 @@ Módulo `server/importacao.js`, isolado do cadastro manual. Fluxo: **arquivo →
 | PUT | `/api/retiradas/:id` | Correção justificada (admin) |
 | POST | `/api/retiradas/:id/estornar` | Estorno justificado (admin) |
 | POST/GET | `/api/encomendas/:id/anexos`, `/api/anexos/:id/arquivo` | Comprovantes |
-| CRUD | `/api/quadras`, `/api/lotes` | Relação oficial (cadastro manual) |
+| GET/POST/PUT/DELETE | `/api/quadras`, `/api/lotes`, `GET /api/lotes/:id` | Gerenciar quadras e lotes (escrita só admin; exclusão só sem encomendas, justificada) |
 | POST/GET | `/api/quadras-lotes/importar/previa`, `/api/quadras-lotes/importar`, `/api/quadras-lotes/importacoes` | Importação com prévia e histórico (admin) |
 | CRUD | `/api/transportadoras`, `/api/usuarios`, `/api/configuracoes` | Cadastros |
-| GET | `/api/relatorios?formato=json\|pdf\|xlsx`, `/api/relatorios/funcionarios` | Relatórios |
+| GET/POST | `/api/relatorios`, `/api/relatorios/funcionarios`, `/api/relatorios/exportacao` | Dados e totais dos relatórios; registro das exportações feitas no navegador |
 | GET | `/api/auditoria` | Trilhas de auditoria (admin) |
 | GET/POST | `/api/backups` | Backups (admin) |
 

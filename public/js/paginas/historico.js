@@ -1,4 +1,5 @@
-import { api, qs, baixar } from '../api.js';
+import { api, qs } from '../api.js';
+import { exportarEncomendas } from '../exportar.js';
 import { html, mount, $, $$, icon, toast, statusBadge, diasBadge, endereco, fmtDataHora, fmtRetirada, opcoes, debounce } from '../ui.js';
 import { estado, lotesDaQuadra } from '../estado.js';
 
@@ -90,7 +91,7 @@ export async function render(el, { navegar, query, atual }) {
   $('#limpar', el).addEventListener('click', () => navegar('#/historico'));
   const exportar = async (formato, btn) => {
     btn.disabled = true;
-    try { await baixar('/relatorios' + qs({ ...params(), formato, ordem: f.ordem })); } catch (e) { toast(e.message, 'erro'); } finally { btn.disabled = false; }
+    try { await exportarEncomendas({ ...params(), ordem: f.ordem }, formato); } catch (e) { toast(e.message, 'erro'); } finally { btn.disabled = false; }
   };
   $('#exp-pdf', el).addEventListener('click', (e) => exportar('pdf', e.currentTarget));
   $('#exp-xlsx', el).addEventListener('click', (e) => exportar('xlsx', e.currentTarget));

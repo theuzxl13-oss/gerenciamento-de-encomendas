@@ -1,13 +1,13 @@
-'use strict';
 // Teste ponta a ponta no navegador (Playwright/Chromium): fluxo completo da portaria pela interface.
-// Defina SCREENSHOTS=<pasta> para salvar capturas de tela.
-const { test, before, after, afterEach } = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
-const { chromium } = require('playwright');
-const { iniciar } = require('./helpers');
-const { todayLocal } = require('../server/time');
+// ALVO=node (padrão) ou ALVO=cloudflare (Workers local). SCREENSHOTS=<pasta> salva capturas de tela.
+import { test, before, after, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import ExcelJS from 'exceljs';
+import { iniciar } from './helpers.js';
+import { todayLocal } from '../src/lib/time.js';
 
 let srv; let browser; let page;
 const erros = [];
@@ -233,8 +233,75 @@ test('relatórios: visualizar e exportar PDF e Excel', async () => {
   if (SHOTS) fs.copyFileSync(await dl.path(), path.join(SHOTS, 'relatorio.pdf'));
   [dl] = await Promise.all([page.waitForEvent('download'), page.click('#xlsx')]);
   assert.match(dl.suggestedFilename(), /\.xlsx$/);
+  // Excel gerado no navegador: abre e confere as linhas
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(fs.readFileSync(await dl.path()));
+  const ws = wb.getWorksheet('Encomendas');
+  assert.equal(ws.getRow(4).getCell(1).value, 'Identificador');
+  assert.equal(ws.rowCount - 4, 3, 'todas as encomendas exportadas');
+  assert.match(String(ws.getRow(5).getCell(1).value), /^FI-\d{4}-\d{5}$/);
   await page.click('#ver-f');
   await page.locator('#res-f td', { hasText: 'Bruno Controlador' }).waitFor();
+  [dl] = await Promise.all([page.waitForEvent('download'), page.click('#pdf-f')]);
+  assert.equal(fs.readFileSync(await dl.path()).subarray(0, 5).toString(), '%PDF-');
+});
+
+test('gerenciar quadras e lotes pela interface: quadra acima de 114, lote, pesquisa, consulta e exclusão controlada', async () => {
+  await page.click('a[data-rota=quadras]');
+  await page.getByRole('heading', { name: 'Gerenciar quadras e lotes' }).waitFor();
+  // nova quadra 115
+  await page.click('#nova-quadra');
+  await page.fill('#f-q input[name=codigo]', '115');
+  await page.click('#q-ok');
+  await toast('Quadra salva');
+  await page.locator('#lista-quadras button.ativo', { hasText: 'Quadra 115' }).waitFor();
+  // duplicidade (grafia equivalente)
+  await page.click('#nova-quadra');
+  await page.fill('#f-q input[name=codigo]', '0115');
+  await page.click('#q-ok');
+  await page.locator('#f-q .alerta.erro', { hasText: 'já cadastrada' }).waitFor();
+  await page.click('.modal [data-fechar]');
+  // lotes 01 e 02 na quadra 115
+  for (const cod of ['01', '02']) {
+    await page.click('#novo-lote');
+    await page.fill('#f-l input[name=codigo]', cod);
+    await page.click('#l-ok');
+    await toast('Lote salvo');
+  }
+  await page.waitForFunction(() => document.querySelectorAll('#lotes tbody tr').length === 2);
+  await page.click('#novo-lote');
+  await page.fill('#f-l input[name=codigo]', '1');
+  await page.click('#l-ok');
+  await page.locator('#f-l .alerta.erro', { hasText: 'já existe' }).waitFor();
+  await page.click('.modal [data-fechar]');
+  // pesquisa por "115/02"
+  await page.fill('#busca-lote', '115/02');
+  await page.waitForFunction(() => document.querySelectorAll('#lotes tbody tr').length === 1);
+  assert.match(await page.locator('#lotes tbody tr').first().textContent(), /115\s*02/);
+  await shot('19-gerenciar-quadras-lotes');
+  // excluir lote sem encomendas (justificado)
+  await page.locator('[data-ed-lote]').first().click();
+  await page.click('#l-excluir');
+  await page.fill('#just-txt', 'Cadastrado por engano');
+  await page.click('#just-ok');
+  await toast('Lote excluído');
+  await page.fill('#busca-lote', '');
+  await page.waitForFunction(() => document.querySelectorAll('#lotes tbody tr').length === 1);
+  // lote com encomendas: identificação travada e sem opção de excluir
+  await page.fill('#busca-lote', '01/01');
+  await page.waitForFunction(() => document.querySelectorAll('#lotes tbody tr').length === 1);
+  await page.locator('[data-ver]').first().click();
+  await page.locator('.modal', { hasText: 'Histórico de alterações do cadastro' }).waitFor();
+  assert.match(await page.locator('.modal .dl').textContent(), /2 no total/);
+  await shot('20-consulta-lote');
+  await page.click('#c-editar');
+  assert.equal(await page.locator('#f-l input[name=codigo]').getAttribute('readonly'), '');
+  assert.equal(await page.locator('#l-excluir').count(), 0, 'lote com encomendas não pode ser excluído');
+  await page.click('.modal [data-fechar]');
+  // a nova quadra já está disponível no cadastro de encomendas, sem republicar o sistema
+  await page.click('a[data-rota=nova]');
+  await page.selectOption('#n-quadra', { label: 'Quadra 115' });
+  assert.deepEqual(await page.locator('#n-lote option').allTextContents(), ['Selecione…', 'Lote 01']);
 });
 
 test('dashboard e auditoria refletem as operações', async () => {

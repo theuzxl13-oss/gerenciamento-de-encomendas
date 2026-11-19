@@ -30,6 +30,7 @@ export const api = {
   get: (u) => chamar('GET', u),
   post: (u, b = {}) => chamar('POST', u, b),
   put: (u, b = {}) => chamar('PUT', u, b),
+  del: (u, b = {}) => chamar('DELETE', u, b),
 };
 
 export function qs(obj) {

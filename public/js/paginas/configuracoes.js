@@ -5,7 +5,7 @@ import { modalTrocarSenha } from '../main.js';
 
 export async function render(el, { atual }) {
   const admin = ehAdmin();
-  const [transps, backups] = admin ? await Promise.all([api.get('/transportadoras?todas=1'), api.get('/backups')]) : [[], []];
+  const [transps, backups] = admin ? await Promise.all([api.get('/transportadoras?todas=1'), api.get('/backups')]) : [[], { suportado: false, itens: [] }];
   if (!atual()) return;
   await carregarConfig();
   const c = estado.config;
@@ -23,8 +23,8 @@ export async function render(el, { atual }) {
         <div class="campo c-3"><label>Alerta de espera (dias)</label><input type="number" name="dias_alerta" min="1" max="365" value="${c.dias_alerta}"></div>
         <div class="campo c-3"><label>Espera crítica (dias)</label><input type="number" name="dias_critico" min="1" max="365" value="${c.dias_critico}"></div>
         <div class="campo c-3"><label>Tolerância de horário (min)</label><input type="number" name="minutos_tolerancia_horario" min="1" max="1440" value="${c.minutos_tolerancia_horario}"><span class="dica">Acima disso, a baixa exige justificativa.</span></div>
-        <div class="campo c-3"><label>Retenção de backups (dias)</label><input type="number" name="backup_retencao_dias" min="1" max="3650" value="${c.backup_retencao_dias}"></div>
-        <label class="check c-12"><input type="checkbox" name="backup_automatico" ${c.backup_automatico ? 'checked' : ''}> Backup automático diário do banco de dados</label>
+        ${c.ambiente === 'node' ? html`<div class="campo c-3"><label>Retenção de backups (dias)</label><input type="number" name="backup_retencao_dias" min="1" max="3650" value="${c.backup_retencao_dias}"></div>
+        <label class="check c-12"><input type="checkbox" name="backup_automatico" ${c.backup_automatico ? 'checked' : ''}> Backup automático diário do banco de dados</label>` : ''}
         <div class="c-12 form-acoes"><button class="btn primario" type="submit">Salvar parâmetros</button></div>
       </form></div></section>
 
@@ -33,11 +33,14 @@ export async function render(el, { atual }) {
       <tbody>${transps.map((t) => html`<tr><td>${t.nome}</td><td>${t.uso}</td><td><span class="badge ativo-${t.ativo}">${t.ativo ? 'Ativa' : 'Inativa'}</span></td>
         <td class="acoes"><button class="btn sm" data-ren="${t.id}">Renomear</button> <button class="btn sm" data-tog="${t.id}">${t.ativo ? 'Desativar' : 'Ativar'}</button></td></tr>`)}</tbody></table></div></section>
 
-    <section class="card"><div class="card-head"><h2>Backups do banco de dados</h2><button class="btn sm primario" id="backup">Criar backup agora</button></div>
+    ${backups.suportado ? html`<section class="card"><div class="card-head"><h2>Backups do banco de dados</h2><button class="btn sm primario" id="backup">Criar backup agora</button></div>
       <div class="card-body small muted" style="padding-bottom:0">Os backups ficam na pasta <span class="mono">data/backups</span> do servidor. Recomenda-se copiá-los periodicamente para outro local (pen drive, nuvem). Comprovantes ficam em <span class="mono">data/uploads</span>.</div>
-      ${backups.length ? html`<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Arquivo</th><th>Criado em</th><th>Tamanho</th><th></th></tr></thead>
-        <tbody>${backups.slice(0, 30).map((b) => html`<tr><td class="mono small">${b.nome}</td><td>${fmtDataHora(b.criado_em)}</td><td>${fmtBytes(b.tamanho)}</td>
-          <td class="acoes"><button class="btn sm" data-bk="${b.nome}">${icon('baixar')} Baixar</button></td></tr>`)}</tbody></table></div>` : html`<div class="vazio">Nenhum backup ainda.</div>`}</section>` : ''}`);
+      ${backups.itens.length ? html`<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Arquivo</th><th>Criado em</th><th>Tamanho</th><th></th></tr></thead>
+        <tbody>${backups.itens.slice(0, 30).map((b) => html`<tr><td class="mono small">${b.nome}</td><td>${fmtDataHora(b.criado_em)}</td><td>${fmtBytes(b.tamanho)}</td>
+          <td class="acoes"><button class="btn sm" data-bk="${b.nome}">${icon('baixar')} Baixar</button></td></tr>`)}</tbody></table></div>` : html`<div class="vazio">Nenhum backup ainda.</div>`}</section>`
+    : html`<section class="card"><div class="card-head"><h2>Backups do banco de dados</h2></div><div class="card-body small">
+      <p style="margin-top:0">O sistema está publicado na <strong>Cloudflare</strong>: o banco D1 guarda automaticamente o histórico de alterações e permite restaurá-lo a qualquer momento dos últimos dias (<em>Time Travel</em>), sem ação na portaria.</p>
+      <p style="margin-bottom:0">Para guardar uma cópia completa fora da Cloudflare, o responsável técnico executa <span class="mono">npm run backup:cloudflare</span> (instruções no README). Comprovantes armazenados: <strong>${c.armazenamento === 'r2' ? 'Cloudflare R2' : 'no próprio banco D1'}</strong>.</p></div></section>`}` : ''}`);
 
   $('#trocar-senha', el).addEventListener('click', () => modalTrocarSenha(false));
   if (!admin) return;
@@ -59,7 +62,7 @@ export async function render(el, { atual }) {
     const t = transps.find((x) => x.id === Number(b.dataset.tog));
     try { await api.put(`/transportadoras/${t.id}`, { ativo: !t.ativo }); await carregarTransportadoras(); recarregar(); } catch (err) { toast(err.message, 'erro'); }
   }));
-  $('#backup', el).addEventListener('click', async (e) => {
+  if ($('#backup', el)) $('#backup', el).addEventListener('click', async (e) => {
     e.currentTarget.disabled = true;
     try { const b = await api.post('/backups'); toast(`Backup criado: ${b.nome}`); recarregar(); } catch (err) { toast(err.message, 'erro'); }
   });
