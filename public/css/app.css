@@ -56,7 +56,7 @@ svg[aria-hidden="true"] { width: 1.15em; height: 1.15em; vertical-align: -0.22em
   display: flex; flex-direction: column; overflow-y: auto;
 }
 .brand { display: flex; gap: 12px; align-items: center; padding: 18px 18px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
-.brand img { width: 42px; height: 42px; flex: none; }
+.brand img { width: 58px; height: auto; flex: none; }
 .brand strong { display: block; color: #fff; font-size: 1.02rem; letter-spacing: .2px; }
 .brand span { display: block; font-size: .78rem; color: #a9c4b6; }
 .nav { padding: 10px 10px; display: flex; flex-direction: column; gap: 2px; flex: 1; }
@@ -272,8 +272,9 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: .9rem; }
 /* ---------- Login ---------- */
 .login-page { min-height: 100vh; display: grid; grid-template-columns: 1.05fr 1fr; }
 .login-lado { background: linear-gradient(160deg, var(--verde-700), var(--verde-900)); color: #e6efe9; padding: 48px; display: flex; flex-direction: column; justify-content: space-between; }
-.login-lado .marca { display: flex; align-items: center; gap: 14px; }
-.login-lado .marca img { width: 60px; height: 60px; }
+.login-lado .marca { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.login-lado .marca img { width: 240px; max-width: 100%; height: auto; }
+.login-lado .marca span { font-size: .85rem; letter-spacing: .04em; color: #b6cdc1; }
 .login-lado .marca strong { font-size: 1.5rem; color: #fff; display: block; }
 .login-lado h2 { font-size: 1.9rem; color: #fff; font-weight: 700; max-width: 460px; line-height: 1.2; }
 .login-lado p { color: #b6cdc1; max-width: 440px; }
@@ -318,6 +319,7 @@ table.tabela { width: 100%; border-collapse: collapse; font-size: .9rem; }
   .login-page { grid-template-columns: 1fr; }
   .login-lado { padding: 26px 22px; gap: 18px; }
   .login-lado h2 { font-size: 1.3rem; }
+  .login-lado .marca img { width: 180px; }
   .login-lado .extra { display: none; }
   .c-8, .c-6, .c-4, .c-3 { grid-column: span 12; }
   .c-2 { grid-column: span 6; }

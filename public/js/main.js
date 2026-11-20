@@ -46,7 +46,7 @@ function layout() {
   mount(app, html`
   <div class="layout" id="layout">
     <aside class="sidebar" aria-label="Menu principal">
-      <div class="brand"><img src="/img/emblema.svg" alt=""><div><strong>Fazenda da Ilha</strong><span>Gestão de Encomendas</span></div></div>
+      <div class="brand"><img src="/img/simbolo.png" alt=""><div><strong>Fazenda da Ilha</strong><span>Gestão de Encomendas</span></div></div>
       <nav class="nav">
         ${MENU.filter((m) => !m.admin || ehAdmin()).map((m, i) => html`
           ${i === 6 ? html`<div class="grupo">Administração</div>` : ''}
@@ -126,7 +126,7 @@ async function sair() {
 // ---------- Login / primeiro acesso ----------
 function ladoMarca() {
   return html`<div class="login-lado">
-    <div class="marca"><img src="/img/emblema.svg" alt=""><div><strong>Fazenda da Ilha</strong><span>Portaria · Gestão de Encomendas</span></div></div>
+    <div class="marca"><img src="/img/logo.png" alt="Fazenda da Ilha – Condomínio Residencial"><span>Portaria · Gestão de Encomendas</span></div>
     <div><h2>Livro digital de controle de encomendas da portaria</h2>
     <p class="extra">Recebimento, armazenamento, localização e retirada das encomendas dos moradores, com histórico permanente e auditável.</p></div>
     <div class="extra small" style="color:#9fbcae">Acesso restrito a funcionários autorizados. Todas as operações são registradas.</div>

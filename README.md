@@ -152,5 +152,5 @@ Senhas com PBKDF2-SHA256; sessão em cookie `HttpOnly`/`SameSite=Strict`; prote�
 de segurança; comprovantes só com login e verificados pelo conteúdo. Registros não podem ser apagados:
 *triggers* no banco bloqueiam exclusões; cancelamentos, estornos e desativações são lógicos e auditados.
 
-O emblema em `public/img/emblema.svg` é provisório. Substitua pelo logotipo oficial da Fazenda da Ilha.
+Logotipo oficial em `public/img/logo.png` (tela de entrada); símbolo em `public/img/simbolo.png` (menu) e `public/img/icone.png` (ícone da aba).
 Bibliotecas de terceiros do navegador (ExcelJS, jsPDF): `public/vendor/LICENCAS.txt`.
