@@ -16,7 +16,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "encomendas-fazenda-da-ilha"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "d6c01ff7-d0d8-4c0d-9b6d-e695addaf90d"
 migrations_dir = "migrations"
 
 [observability]
